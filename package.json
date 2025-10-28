@@ -1,0 +1,21 @@
+{
+  "name": "wallet-info-telegram-bot",
+  "version": "1.0.0",
+  "description": "A Telegram bot that provides comprehensive wallet information",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "nodemon bot.js"
+  },
+  "dependencies": {
+    "telegraf": "^4.15.6",
+    "axios": "^1.6.2",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "keywords": ["telegram", "bot", "wallet", "crypto", "solana"],
+  "author": "Milla",
+  "license": "MIT"
+}
