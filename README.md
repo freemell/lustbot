@@ -11,7 +11,7 @@ A powerful Telegram bot that provides comprehensive analysis of Solana wallet ad
 - 🔍 **Comprehensive Wallet Analysis**: Get detailed information about any Solana wallet
 - 💰 **Enhanced Balance Information**: SOL balance with USD value and token holdings
 - 📊 **Advanced Transaction Data**: Transaction count, wallet age, activity level, and last activity
-- 🪙 **Detailed Token Information**: List of tokens with USD values and total portfolio value
+- 🪙 **Detailed Token Information**: List of tokens with tickers, names, USD values, and total portfolio value
 - 🏦 **Staking Information**: Shows staked SOL amounts when available
 - 📈 **Activity Analysis**: Determines wallet activity level (Very Low to Very High)
 - ⏰ **Rate Limiting**: Built-in rate limiting to prevent API abuse
@@ -19,6 +19,7 @@ A powerful Telegram bot that provides comprehensive analysis of Solana wallet ad
 - 🛡️ **Error Handling**: Comprehensive error handling with specific error messages
 - 🔄 **API Fallback**: Automatic fallback to Solana RPC if Solscan API fails
 - 📡 **Data Source Indicator**: Shows which API was used for the data
+- 🧭 **Smart Address Detection**: Ignores contracts/programs and reports only wallet addresses
 
 ## Setup
 

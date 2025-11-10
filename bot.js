@@ -11,10 +11,168 @@ const bot = new Telegraf(config.TELEGRAM_BOT_TOKEN);
 
 // Wallet address validation regex
 const SOLANA_ADDRESS_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const SYSTEM_PROGRAM_ID = '11111111111111111111111111111111';
+const TOKEN_LIST_URL = 'https://cdn.jsdelivr.net/gh/solana-labs/token-list@main/src/tokens/solana.tokenlist.json';
+
+const tokenMetadataCache = new Map();
+let tokenListPromise = null;
+let solscanMetaFailures = 0;
 
 // Function to validate Solana wallet address
 function isValidSolanaAddress(address) {
   return SOLANA_ADDRESS_REGEX.test(address);
+}
+
+// Function to determine if account is a wallet (not a program/contract)
+function isWalletAccount(account) {
+  if (!account) {
+    return false;
+  }
+
+  if (account.owner) {
+    if (account.owner === SYSTEM_PROGRAM_ID) {
+      return true;
+    }
+    return false;
+  }
+
+  if (account.ownerProgram) {
+    const loweredOwner = String(account.ownerProgram).toLowerCase();
+    if (loweredOwner.includes('system')) {
+      return true;
+    }
+    if (loweredOwner.includes('token') || loweredOwner.includes('program') || loweredOwner.includes('contract')) {
+      return false;
+    }
+  }
+
+  if (typeof account.executable === 'boolean') {
+    return account.executable === false;
+  }
+
+  if (account.type && typeof account.type === 'string') {
+    const lowered = account.type.toLowerCase();
+    if (lowered.includes('program') || lowered.includes('contract') || lowered.includes('executable')) {
+      return false;
+    }
+  }
+
+  // Default to true when we don't have explicit indicators
+  return true;
+}
+
+async function loadTokenListMap() {
+  if (!tokenListPromise) {
+    tokenListPromise = axios.get(TOKEN_LIST_URL, { timeout: 10000 }).then((res) => {
+      const tokens = res.data?.tokens || [];
+      const map = new Map();
+      for (const token of tokens) {
+        if (token?.address) {
+          map.set(token.address, token);
+        }
+      }
+      return map;
+    }).catch((err) => {
+      console.error('Failed to load Solana token list:', err.message);
+      return new Map();
+    });
+  }
+  return tokenListPromise;
+}
+
+async function fetchSolscanTokenMeta(mint) {
+  if (!config.SOLSCAN_API_KEY) {
+    return null;
+  }
+
+  if (solscanMetaFailures > 3) {
+    return null;
+  }
+
+  try {
+    const headers = {
+      'Authorization': `Bearer ${config.SOLSCAN_API_KEY}`,
+      'Content-Type': 'application/json'
+    };
+
+    const response = await axios.get(`https://api.solscan.io/token/meta?address=${mint}`, { headers, timeout: 10000 });
+    if (response.data) {
+      const meta = response.data;
+      return {
+        symbol: meta.symbol || null,
+        name: meta.name || null,
+        decimals: meta.decimals
+      };
+    }
+  } catch (error) {
+    solscanMetaFailures += 1;
+    console.warn(`Solscan token meta fetch failed for ${mint}:`, error.response?.status || error.message);
+  }
+
+  return null;
+}
+
+async function getTokenMetadata(mint) {
+  if (!mint) {
+    return null;
+  }
+
+  if (tokenMetadataCache.has(mint)) {
+    return tokenMetadataCache.get(mint);
+  }
+
+  let metadata = await fetchSolscanTokenMeta(mint);
+
+  if (!metadata) {
+    const tokenMap = await loadTokenListMap();
+    const tokenInfo = tokenMap.get(mint);
+    if (tokenInfo) {
+      metadata = {
+        symbol: tokenInfo.symbol || null,
+        name: tokenInfo.name || null,
+        decimals: tokenInfo.decimals
+      };
+    }
+  }
+
+  if (!metadata) {
+    metadata = {
+      symbol: null,
+      name: null
+    };
+  }
+
+  tokenMetadataCache.set(mint, metadata);
+  return metadata;
+}
+
+async function enrichTokensWithMetadata(tokens) {
+  if (!tokens || tokens.length === 0) {
+    return;
+  }
+
+  for (const token of tokens) {
+    if (!token.tokenSymbol || !token.tokenName) {
+      const meta = await getTokenMetadata(token.mint);
+      if (meta) {
+        if (!token.tokenSymbol && meta.symbol) {
+          token.tokenSymbol = meta.symbol;
+        }
+        if (!token.tokenName && meta.name) {
+          token.tokenName = meta.name;
+        }
+        if (meta.decimals !== undefined && token.tokenAmount && token.tokenAmount.decimals === undefined) {
+          token.tokenAmount.decimals = meta.decimals;
+        }
+      }
+    }
+    if (!token.tokenSymbol) {
+      token.tokenSymbol = (token.mint || '').slice(0, 5) + '...';
+    }
+    if (!token.tokenName) {
+      token.tokenName = token.mint || 'Unknown Token';
+    }
+  }
 }
 
 // Rate limiting function
@@ -51,9 +209,12 @@ async function getWalletInfo(address) {
         axios.get(`https://api.solscan.io/account/transactions?address=${address}&limit=1000`, { headers })
       ]);
 
+      const tokensData = Array.isArray(tokensResponse.data) ? tokensResponse.data : [];
+      await enrichTokensWithMetadata(tokensData);
+
       return {
         account: accountResponse.data,
-        tokens: tokensResponse.data,
+        tokens: tokensData,
         transactions: txResponse.data,
         source: 'solscan'
       };
@@ -121,7 +282,8 @@ async function getWalletInfoFallback(address) {
       return {
         tokenAmount: {
           uiAmount: parsed.tokenAmount?.uiAmount || 0,
-          amount: parsed.tokenAmount?.amount || '0'
+          amount: parsed.tokenAmount?.amount || '0',
+          decimals: parsed.tokenAmount?.decimals
         },
         tokenSymbol: 'Unknown',
         tokenName: 'Unknown Token',
@@ -129,11 +291,15 @@ async function getWalletInfoFallback(address) {
       };
     });
 
+    await enrichTokensWithMetadata(tokens);
+
     // Create account data structure with accurate transaction count
     const accountData = {
       lamports: accountInfo.lamports || 0,
       executable: accountInfo.executable || false,
-      transactionCount: signatures.length
+      owner: accountInfo.owner,
+      transactionCount: signatures.length,
+      type: accountInfo.executable ? 'Program' : 'Account'
     };
 
     return {
@@ -254,9 +420,9 @@ function formatWalletInfo(walletData, address) {
       if (source === 'solscan' && token.tokenPrice) {
         const value = balance * token.tokenPrice;
         totalTokenValue += value;
-        return `• ${symbol}: ${balance.toLocaleString()} ($${value.toFixed(2)})`;
+        return `• ${symbol} (${name}): ${balance.toLocaleString()} ($${value.toFixed(2)})`;
       } else {
-        return `• ${symbol}: ${balance.toLocaleString()}`;
+        return `• ${symbol} (${name}): ${balance.toLocaleString()}`;
       }
     }).join('\n');
     
@@ -340,6 +506,24 @@ bot.on('text', async (ctx) => {
   try {
     // Get wallet information
     const walletData = await getWalletInfo(walletAddress);
+    const isWallet = isWalletAccount(walletData.account);
+
+    if (!isWallet) {
+      await ctx.telegram.editMessageText(
+        ctx.chat.id,
+        loadingMessage.message_id,
+        null,
+        '⚠️ This address looks like a Solana program or contract. Please send a regular wallet address for analysis.',
+        {
+          reply_markup: Markup.inlineKeyboard([
+            [
+              Markup.button.url('💼 DM for Job', 'https://t.me/millw14')
+            ]
+          ]).reply_markup
+        }
+      );
+      return;
+    }
     
     // Format the response
     const formattedInfo = formatWalletInfo(walletData, walletAddress);
